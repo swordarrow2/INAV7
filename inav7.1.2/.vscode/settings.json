@@ -1,0 +1,23 @@
+{
+    "files.associations": {
+        "chrono": "c",
+        "cmath": "c",
+        "ranges": "c",
+        "platform.h": "c",
+        "timer.h": "c",
+        "bus.h": "c",
+        "piniobox.h": "c",
+        "time.h": "c",
+        "telemetry.h": "c",
+        "navigation.h": "c",
+        "rc_modes.h": "c",
+        "sbus_channels.h": "c",
+        "fc_init.h": "c"
+    },
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "editor.detectIndentation": false,
+    "editor.expandTabs": true,
+    "C_Cpp.clang_format_fallbackStyle": "{ BasedOnStyle: Google, IndentWidth: 4,  BreakBeforeBraces: Mozilla }"
+
+}
