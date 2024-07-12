@@ -1,0 +1,1 @@
+target_stm32f405xg(KoT_V1_0)
