@@ -15,67 +15,61 @@
  * along with Cleanflight.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "sensors/battery.h"
+
 #include <math.h>
 
-#include "stdbool.h"
-#include "stdint.h"
-#include "stdlib.h"
-
-#include "platform.h"
-
 #include "build/debug.h"
-
-#include "common/maths.h"
 #include "common/filter.h"
-
+#include "common/maths.h"
 #include "config/config_reset.h"
+#include "config/feature.h"
 #include "config/parameter_group.h"
 #include "config/parameter_group_ids.h"
-
 #include "drivers/adc.h"
 #include "drivers/time.h"
-
 #include "fc/config.h"
 #include "fc/controlrate_profile.h"
 #include "fc/fc_core.h"
+#include "fc/rc_controls.h"
 #include "fc/runtime_config.h"
-#include "fc/stats.h"
 #include "fc/settings.h"
-
+#include "fc/stats.h"
 #include "flight/imu.h"
 #include "flight/mixer.h"
-
+#include "io/beeper.h"
 #include "navigation/navigation.h"
 #include "navigation/navigation_private.h"
-
-#include "config/feature.h"
-
-#include "sensors/battery.h"
-#include "sensors/esc_sensor.h"
-
+#include "platform.h"
 #include "rx/rx.h"
-
-#include "fc/rc_controls.h"
-
-#include "io/beeper.h"
+#include "sensors/esc_sensor.h"
+#include "stdbool.h"
+#include "stdint.h"
+#include "stdlib.h"
 
 #if defined(USE_FAKE_BATT_SENSOR)
 #include "sensors/battery_sensor_fake.h"
 #endif
 
-#define ADCVREF 3300                            // in mV (3300 = 3.3V)
+#define ADCVREF 3300  // in mV (3300 = 3.3V)
 
-#define VBATT_CELL_FULL_MAX_DIFF 10             // Max difference with cell max voltage for the battery to be considered full (10mV steps)
-#define VBATT_PRESENT_THRESHOLD 100             // Minimum voltage to consider battery present
-#define VBATT_STABLE_DELAY 40                   // Delay after connecting battery to begin monitoring
-#define VBATT_HYSTERESIS 10                     // Batt Hysteresis of +/-100mV for changing battery state
-#define VBATT_LPF_FREQ  1                       // Battery voltage filtering cutoff
-#define AMPERAGE_LPF_FREQ  1                    // Battery current filtering cutoff
-#define IMPEDANCE_STABLE_SAMPLE_COUNT_THRESH 10 // Minimum sample count to consider calculated power supply impedance as stable
-
+#define VBATT_CELL_FULL_MAX_DIFF \
+    10  // Max difference with cell max voltage for the battery to be considered
+        // full (10mV steps)
+#define VBATT_PRESENT_THRESHOLD \
+    100  // Minimum voltage to consider battery present
+#define VBATT_STABLE_DELAY \
+    40  // Delay after connecting battery to begin monitoring
+#define VBATT_HYSTERESIS \
+    10  // Batt Hysteresis of +/-100mV for changing battery state
+#define VBATT_LPF_FREQ 1     // Battery voltage filtering cutoff
+#define AMPERAGE_LPF_FREQ 1  // Battery current filtering cutoff
+#define IMPEDANCE_STABLE_SAMPLE_COUNT_THRESH \
+    10  // Minimum sample count to consider calculated power supply impedance as
+        // stable
 
 // Battery monitoring stuff
-static uint8_t batteryCellCount;                // cell count
+static uint8_t batteryCellCount;  // cell count
 static uint16_t batteryFullVoltage;
 static uint16_t batteryWarningVoltage;
 static uint16_t batteryCriticalVoltage;
@@ -84,105 +78,129 @@ static bool batteryUseCapacityThresholds = false;
 static bool batteryFullWhenPluggedIn = false;
 static bool profileAutoswitchDisable = false;
 
-static uint16_t vbat = 0;                       // battery voltage in 0.01V steps (filtered)
-static uint16_t powerSupplyImpedance = 0;       // calculated impedance in milliohm
-static uint16_t sagCompensatedVBat = 0;         // calculated no load vbat
+static uint16_t vbat = 0;  // battery voltage in 0.01V steps (filtered)
+static uint16_t powerSupplyImpedance = 0;  // calculated impedance in milliohm
+static uint16_t sagCompensatedVBat = 0;    // calculated no load vbat
 static bool powerSupplyImpedanceIsValid = false;
 
-static int16_t amperage = 0;                    // amperage read by current sensor in centiampere (1/100th A)
-static int32_t power = 0;                       // power draw in cW (0.01W resolution)
-static int32_t mAhDrawn = 0;                    // milliampere hours drawn from the battery since start
-static int32_t mWhDrawn = 0;                    // energy (milliWatt hours) drawn from the battery since start
+static int16_t amperage =
+    0;  // amperage read by current sensor in centiampere (1/100th A)
+static int32_t power = 0;  // power draw in cW (0.01W resolution)
+static int32_t mAhDrawn =
+    0;  // milliampere hours drawn from the battery since start
+static int32_t mWhDrawn =
+    0;  // energy (milliWatt hours) drawn from the battery since start
 
 batteryState_e batteryState;
 const batteryProfile_t *currentBatteryProfile;
 
-PG_REGISTER_ARRAY_WITH_RESET_FN(batteryProfile_t, MAX_BATTERY_PROFILE_COUNT, batteryProfiles, PG_BATTERY_PROFILES, 2);
+PG_REGISTER_ARRAY_WITH_RESET_FN(batteryProfile_t, MAX_BATTERY_PROFILE_COUNT,
+                                batteryProfiles, PG_BATTERY_PROFILES, 2);
 
 void pgResetFn_batteryProfiles(batteryProfile_t *instance)
 {
     for (int i = 0; i < MAX_BATTERY_PROFILE_COUNT; i++) {
-        RESET_CONFIG(batteryProfile_t, &instance[i],
+        RESET_CONFIG(
+            batteryProfile_t, &instance[i],
 #ifdef USE_ADC
             .cells = SETTING_BAT_CELLS_DEFAULT,
 
-            .voltage = {
-                .cellDetect = SETTING_VBAT_CELL_DETECT_VOLTAGE_DEFAULT,
-                .cellMax = SETTING_VBAT_MAX_CELL_VOLTAGE_DEFAULT,
-                .cellMin = SETTING_VBAT_MIN_CELL_VOLTAGE_DEFAULT,
-                .cellWarning = SETTING_VBAT_WARNING_CELL_VOLTAGE_DEFAULT
-            },
+            .voltage = {.cellDetect = SETTING_VBAT_CELL_DETECT_VOLTAGE_DEFAULT,
+                        .cellMax = SETTING_VBAT_MAX_CELL_VOLTAGE_DEFAULT,
+                        .cellMin = SETTING_VBAT_MIN_CELL_VOLTAGE_DEFAULT,
+                        .cellWarning =
+                            SETTING_VBAT_WARNING_CELL_VOLTAGE_DEFAULT},
 #endif
 
-            .capacity = {
-                .value = SETTING_BATTERY_CAPACITY_DEFAULT,
-                .warning = SETTING_BATTERY_CAPACITY_WARNING_DEFAULT,
-                .critical = SETTING_BATTERY_CAPACITY_CRITICAL_DEFAULT,
-                .unit = SETTING_BATTERY_CAPACITY_UNIT_DEFAULT,
-            },
+            .capacity =
+                {
+                    .value = SETTING_BATTERY_CAPACITY_DEFAULT,
+                    .warning = SETTING_BATTERY_CAPACITY_WARNING_DEFAULT,
+                    .critical = SETTING_BATTERY_CAPACITY_CRITICAL_DEFAULT,
+                    .unit = SETTING_BATTERY_CAPACITY_UNIT_DEFAULT,
+                },
 
             .controlRateProfile = 0,
 
-            .motor = {
-                .throttleIdle = SETTING_THROTTLE_IDLE_DEFAULT,
-                .throttleScale = SETTING_THROTTLE_SCALE_DEFAULT,
+            .motor =
+                {
+                    .throttleIdle = SETTING_THROTTLE_IDLE_DEFAULT,
+                    .throttleScale = SETTING_THROTTLE_SCALE_DEFAULT,
 #ifdef USE_DSHOT
-                .turtleModePowerFactor = SETTING_TURTLE_MODE_POWER_FACTOR_DEFAULT,
+                    .turtleModePowerFactor =
+                        SETTING_TURTLE_MODE_POWER_FACTOR_DEFAULT,
 #endif
-            },
-
-            .failsafe_throttle = SETTING_FAILSAFE_THROTTLE_DEFAULT,                                 // default throttle off.
-
-            .nav = {
-                .mc = {
-                    .hover_throttle = SETTING_NAV_MC_HOVER_THR_DEFAULT,
                 },
 
-                .fw = {
-                    .cruise_throttle = SETTING_NAV_FW_CRUISE_THR_DEFAULT,
-                    .max_throttle = SETTING_NAV_FW_MAX_THR_DEFAULT,
-                    .min_throttle = SETTING_NAV_FW_MIN_THR_DEFAULT,
-                    .pitch_to_throttle = SETTING_NAV_FW_PITCH2THR_DEFAULT,                          // pwm units per degree of pitch (10pwm units ~ 1% throttle)
-                    .launch_throttle = SETTING_NAV_FW_LAUNCH_THR_DEFAULT,
-                    .launch_idle_throttle = SETTING_NAV_FW_LAUNCH_IDLE_THR_DEFAULT,                 // Motor idle or MOTOR_STOP
-                }
-            },
+            .failsafe_throttle =
+                SETTING_FAILSAFE_THROTTLE_DEFAULT,  // default throttle off.
+
+            .nav =
+                {.mc =
+                     {
+                         .hover_throttle = SETTING_NAV_MC_HOVER_THR_DEFAULT,
+                     },
+
+                 .fw =
+                     {
+                         .cruise_throttle = SETTING_NAV_FW_CRUISE_THR_DEFAULT,
+                         .max_throttle = SETTING_NAV_FW_MAX_THR_DEFAULT,
+                         .min_throttle = SETTING_NAV_FW_MIN_THR_DEFAULT,
+                         .pitch_to_throttle =
+                             SETTING_NAV_FW_PITCH2THR_DEFAULT,  // pwm units per
+                                                                // degree of
+                                                                // pitch (10pwm
+                                                                // units ~ 1%
+                                                                // throttle)
+                         .launch_throttle = SETTING_NAV_FW_LAUNCH_THR_DEFAULT,
+                         .launch_idle_throttle =
+                             SETTING_NAV_FW_LAUNCH_IDLE_THR_DEFAULT,  // Motor
+                                                                      // idle or
+                                                                      // MOTOR_STOP
+                     }},
 
 #if defined(USE_POWER_LIMITS)
-            .powerLimits = {
-                .continuousCurrent = SETTING_LIMIT_CONT_CURRENT_DEFAULT,                            // dA
-                .burstCurrent = SETTING_LIMIT_BURST_CURRENT_DEFAULT,                                // dA
-                .burstCurrentTime = SETTING_LIMIT_BURST_CURRENT_TIME_DEFAULT,                       // dS
-                .burstCurrentFalldownTime = SETTING_LIMIT_BURST_CURRENT_FALLDOWN_TIME_DEFAULT,      // dS
+            .powerLimits =
+                {
+                    .continuousCurrent =
+                        SETTING_LIMIT_CONT_CURRENT_DEFAULT,               // dA
+                    .burstCurrent = SETTING_LIMIT_BURST_CURRENT_DEFAULT,  // dA
+                    .burstCurrentTime =
+                        SETTING_LIMIT_BURST_CURRENT_TIME_DEFAULT,  // dS
+                    .burstCurrentFalldownTime =
+                        SETTING_LIMIT_BURST_CURRENT_FALLDOWN_TIME_DEFAULT,  // dS
 #ifdef USE_ADC
-                .continuousPower = SETTING_LIMIT_CONT_POWER_DEFAULT,                                // dW
-                .burstPower = SETTING_LIMIT_BURST_POWER_DEFAULT,                                    // dW
-                .burstPowerTime = SETTING_LIMIT_BURST_POWER_TIME_DEFAULT,                           // dS
-                .burstPowerFalldownTime = SETTING_LIMIT_BURST_POWER_FALLDOWN_TIME_DEFAULT,          // dS
-#endif // USE_ADC
-            }
-#endif // USE_POWER_LIMITS
+                    .continuousPower = SETTING_LIMIT_CONT_POWER_DEFAULT,  // dW
+                    .burstPower = SETTING_LIMIT_BURST_POWER_DEFAULT,      // dW
+                    .burstPowerTime =
+                        SETTING_LIMIT_BURST_POWER_TIME_DEFAULT,  // dS
+                    .burstPowerFalldownTime =
+                        SETTING_LIMIT_BURST_POWER_FALLDOWN_TIME_DEFAULT,  // dS
+#endif  // USE_ADC
+                }
+#endif  // USE_POWER_LIMITS
 
         );
     }
 }
 
-PG_REGISTER_WITH_RESET_TEMPLATE(batteryMetersConfig_t, batteryMetersConfig, PG_BATTERY_METERS_CONFIG, 1);
+PG_REGISTER_WITH_RESET_TEMPLATE(batteryMetersConfig_t, batteryMetersConfig,
+                                PG_BATTERY_METERS_CONFIG, 1);
 
-PG_RESET_TEMPLATE(batteryMetersConfig_t, batteryMetersConfig,
+PG_RESET_TEMPLATE(
+    batteryMetersConfig_t, batteryMetersConfig,
 
 #ifdef USE_ADC
-    .voltage = {
-        .type = SETTING_VBAT_METER_TYPE_DEFAULT,
-        .scale = VBAT_SCALE_DEFAULT,
-    },
+    .voltage =
+        {
+            .type = SETTING_VBAT_METER_TYPE_DEFAULT,
+            .scale = VBAT_SCALE_DEFAULT,
+        },
 #endif
 
-    .current = {
-        .type = SETTING_CURRENT_METER_TYPE_DEFAULT,
-        .scale = CURRENT_METER_SCALE,
-        .offset = CURRENT_METER_OFFSET
-    },
+    .current = {.type = SETTING_CURRENT_METER_TYPE_DEFAULT,
+                .scale = CURRENT_METER_SCALE,
+                .offset = CURRENT_METER_OFFSET},
 
     .voltageSource = SETTING_BAT_VOLTAGE_SRC_DEFAULT,
 
@@ -205,7 +223,8 @@ void batteryInit(void)
 
 #ifdef USE_ADC
 // profileDetect() profile sorting compare function
-static int profile_compare(profile_comp_t *a, profile_comp_t *b) {
+static int profile_compare(profile_comp_t *a, profile_comp_t *b)
+{
     if (a->max_voltage < b->max_voltage)
         return -1;
     else if (a->max_voltage > b->max_voltage)
@@ -215,22 +234,27 @@ static int profile_compare(profile_comp_t *a, profile_comp_t *b) {
 }
 
 // Find profile matching plugged battery for profile_autoselect
-static int8_t profileDetect(void) {
+static int8_t profileDetect(void)
+{
     profile_comp_t profile_comp_array[MAX_BATTERY_PROFILE_COUNT];
 
     // Prepare profile sort
     for (uint8_t i = 0; i < MAX_BATTERY_PROFILE_COUNT; ++i) {
         const batteryProfile_t *profile = batteryProfiles(i);
         profile_comp_array[i].profile_index = i;
-        profile_comp_array[i].max_voltage = profile->cells * profile->voltage.cellDetect;
+        profile_comp_array[i].max_voltage =
+            profile->cells * profile->voltage.cellDetect;
     }
 
     // Sort profiles by max voltage
-    qsort(profile_comp_array, MAX_BATTERY_PROFILE_COUNT, sizeof(*profile_comp_array), (int (*)(const void *, const void *))profile_compare);
+    qsort(profile_comp_array, MAX_BATTERY_PROFILE_COUNT,
+          sizeof(*profile_comp_array),
+          (int (*)(const void *, const void *))profile_compare);
 
     // Return index of the first profile where vbat <= profile_max_voltage
     for (uint8_t i = 0; i < MAX_BATTERY_PROFILE_COUNT; ++i)
-        if ((profile_comp_array[i].max_voltage > 0) && (vbat <= profile_comp_array[i].max_voltage))
+        if ((profile_comp_array[i].max_voltage > 0) &&
+            (vbat <= profile_comp_array[i].max_voltage))
             return profile_comp_array[i].profile_index;
 
     // No matching profile found
@@ -244,7 +268,9 @@ void setBatteryProfile(uint8_t profileIndex)
         profileIndex = 0;
     }
     currentBatteryProfile = batteryProfiles(profileIndex);
-    if ((currentBatteryProfile->controlRateProfile > 0) && (currentBatteryProfile->controlRateProfile < MAX_CONTROL_RATE_PROFILE_COUNT)) {
+    if ((currentBatteryProfile->controlRateProfile > 0) &&
+        (currentBatteryProfile->controlRateProfile <
+         MAX_CONTROL_RATE_PROFILE_COUNT)) {
         setConfigProfile(currentBatteryProfile->controlRateProfile - 1);
     }
 }
@@ -252,11 +278,15 @@ void setBatteryProfile(uint8_t profileIndex)
 void activateBatteryProfile(void)
 {
     static int8_t previous_battery_profile_index = -1;
-    // Don't call batteryInit if the battery profile was not changed to prevent batteryCellCount to be reset while adjusting board alignment
-    // causing the beeper to be silent when it is disabled while the board is connected through USB (beeper -ON_USB)
-    if (systemConfig()->current_battery_profile_index != previous_battery_profile_index) {
+    // Don't call batteryInit if the battery profile was not changed to prevent
+    // batteryCellCount to be reset while adjusting board alignment causing the
+    // beeper to be silent when it is disabled while the board is connected
+    // through USB (beeper -ON_USB)
+    if (systemConfig()->current_battery_profile_index !=
+        previous_battery_profile_index) {
         batteryInit();
-        previous_battery_profile_index = systemConfig()->current_battery_profile_index;
+        previous_battery_profile_index =
+            systemConfig()->current_battery_profile_index;
     }
 }
 
@@ -266,39 +296,36 @@ static void updateBatteryVoltage(timeUs_t timeDelta, bool justConnected)
     static pt1Filter_t vbatFilterState;
 
     switch (batteryMetersConfig()->voltage.type) {
-        case VOLTAGE_SENSOR_ADC:
-            {
-                vbat = getVBatSample();
-                break;
-            }
+        case VOLTAGE_SENSOR_ADC: {
+            vbat = getVBatSample();
+            break;
+        }
 #if defined(USE_ESC_SENSOR)
-        case VOLTAGE_SENSOR_ESC:
-            {
-                escSensorData_t * escSensor = escSensorGetData();
-                if (escSensor && escSensor->dataAge <= ESC_DATA_MAX_AGE) {
-                    vbat = escSensor->voltage;
-                }
-                else {
-                    vbat = 0;
-                }
+        case VOLTAGE_SENSOR_ESC: {
+            escSensorData_t *escSensor = escSensorGetData();
+            if (escSensor && escSensor->dataAge <= ESC_DATA_MAX_AGE) {
+                vbat = escSensor->voltage;
+            } else {
+                vbat = 0;
             }
+        } break;
+#endif
+
+#if defined(USE_FAKE_BATT_SENSOR)
+        case VOLTAGE_SENSOR_FAKE:
+            vbat = fakeBattSensorGetVBat();
             break;
 #endif
-        
-#if defined(USE_FAKE_BATT_SENSOR)
-    case VOLTAGE_SENSOR_FAKE:
-        vbat = fakeBattSensorGetVBat();
-        break;
-#endif
-    case VOLTAGE_SENSOR_NONE:
+        case VOLTAGE_SENSOR_NONE:
         default:
             vbat = 0;
             break;
     }
 
 #ifdef USE_SIMULATOR
-    if (ARMING_FLAG(SIMULATOR_MODE_HITL) && SIMULATOR_HAS_OPTION(HITL_SIMULATE_BATTERY)) {
-        vbat = ((uint16_t)simulatorData.vbat)*10;
+    if (ARMING_FLAG(SIMULATOR_MODE_HITL) &&
+        SIMULATOR_HAS_OPTION(HITL_SIMULATE_BATTERY)) {
+        vbat = ((uint16_t)simulatorData.vbat) * 10;
         return;
     }
 #endif
@@ -306,15 +333,15 @@ static void updateBatteryVoltage(timeUs_t timeDelta, bool justConnected)
     if (justConnected) {
         pt1FilterReset(&vbatFilterState, vbat);
     } else {
-        vbat = pt1FilterApply4(&vbatFilterState, vbat, VBATT_LPF_FREQ, US2S(timeDelta));
+        vbat = pt1FilterApply4(&vbatFilterState, vbat, VBATT_LPF_FREQ,
+                               US2S(timeDelta));
     }
 }
 
 batteryState_e checkBatteryVoltageState(void)
 {
     uint16_t stateVoltage = getBatteryVoltage();
-    switch (batteryState)
-    {
+    switch (batteryState) {
         case BATTERY_OK:
             if (stateVoltage <= (batteryWarningVoltage - VBATT_HYSTERESIS)) {
                 return BATTERY_WARNING;
@@ -323,7 +350,8 @@ batteryState_e checkBatteryVoltageState(void)
         case BATTERY_WARNING:
             if (stateVoltage <= (batteryCriticalVoltage - VBATT_HYSTERESIS)) {
                 return BATTERY_CRITICAL;
-            } else if (stateVoltage > (batteryWarningVoltage + VBATT_HYSTERESIS)){
+            } else if (stateVoltage >
+                       (batteryWarningVoltage + VBATT_HYSTERESIS)) {
                 return BATTERY_OK;
             }
             break;
@@ -343,7 +371,9 @@ static void checkBatteryCapacityState(void)
 {
     if (batteryRemainingCapacity == 0) {
         batteryState = BATTERY_CRITICAL;
-    } else if (batteryRemainingCapacity <= currentBatteryProfile->capacity.warning - currentBatteryProfile->capacity.critical) {
+    } else if (batteryRemainingCapacity <=
+               currentBatteryProfile->capacity.warning -
+                   currentBatteryProfile->capacity.critical) {
         batteryState = BATTERY_WARNING;
     }
 }
@@ -352,8 +382,8 @@ void batteryUpdate(timeUs_t timeDelta)
 {
     /* battery has just been connected*/
     if (batteryState == BATTERY_NOT_PRESENT && vbat > VBATT_PRESENT_THRESHOLD) {
-
-        /* Actual battery state is calculated below, this is really BATTERY_PRESENT */
+        /* Actual battery state is calculated below, this is really
+         * BATTERY_PRESENT */
         batteryState = BATTERY_OK;
         /* wait for VBatt to stabilise then we can calc number of cells
         (using the filtered value takes a long time to ramp up)
@@ -363,37 +393,52 @@ void batteryUpdate(timeUs_t timeDelta)
         updateBatteryVoltage(timeDelta, true);
 
         int8_t detectedProfileIndex = -1;
-        if (feature(FEATURE_BAT_PROFILE_AUTOSWITCH) && (!profileAutoswitchDisable))
+        if (feature(FEATURE_BAT_PROFILE_AUTOSWITCH) &&
+            (!profileAutoswitchDisable))
             detectedProfileIndex = profileDetect();
 
         if (detectedProfileIndex != -1) {
-            systemConfigMutable()->current_battery_profile_index = detectedProfileIndex;
+            systemConfigMutable()->current_battery_profile_index =
+                detectedProfileIndex;
             setBatteryProfile(detectedProfileIndex);
             batteryCellCount = currentBatteryProfile->cells;
         } else if (currentBatteryProfile->cells > 0)
             batteryCellCount = currentBatteryProfile->cells;
         else {
-            batteryCellCount = (vbat / currentBatteryProfile->voltage.cellDetect) + 1;
-            // Assume there are no 7S, 9S and 11S batteries so round up to 8S, 10S and 12S respectively
-            if (batteryCellCount == 7 || batteryCellCount == 9 || batteryCellCount == 11) {
+            batteryCellCount =
+                (vbat / currentBatteryProfile->voltage.cellDetect) + 1;
+            // Assume there are no 7S, 9S and 11S batteries so round up to 8S,
+            // 10S and 12S respectively
+            if (batteryCellCount == 7 || batteryCellCount == 9 ||
+                batteryCellCount == 11) {
                 batteryCellCount += 1;
             }
             batteryCellCount = MIN(batteryCellCount, 12);
         }
 
-        batteryFullVoltage = batteryCellCount * currentBatteryProfile->voltage.cellMax;
-        batteryWarningVoltage = batteryCellCount * currentBatteryProfile->voltage.cellWarning;
-        batteryCriticalVoltage = batteryCellCount * currentBatteryProfile->voltage.cellMin;
+        batteryFullVoltage =
+            batteryCellCount * currentBatteryProfile->voltage.cellMax;
+        batteryWarningVoltage =
+            batteryCellCount * currentBatteryProfile->voltage.cellWarning;
+        batteryCriticalVoltage =
+            batteryCellCount * currentBatteryProfile->voltage.cellMin;
 
-        batteryFullWhenPluggedIn = vbat >= (batteryFullVoltage - batteryCellCount * VBATT_CELL_FULL_MAX_DIFF);
-        batteryUseCapacityThresholds = isAmperageConfigured() && batteryFullWhenPluggedIn && (currentBatteryProfile->capacity.value > 0) &&
-                                           (currentBatteryProfile->capacity.warning > 0) && (currentBatteryProfile->capacity.critical > 0);
+        batteryFullWhenPluggedIn =
+            vbat >=
+            (batteryFullVoltage - batteryCellCount * VBATT_CELL_FULL_MAX_DIFF);
+        batteryUseCapacityThresholds =
+            isAmperageConfigured() && batteryFullWhenPluggedIn &&
+            (currentBatteryProfile->capacity.value > 0) &&
+            (currentBatteryProfile->capacity.warning > 0) &&
+            (currentBatteryProfile->capacity.critical > 0);
 
     } else {
         updateBatteryVoltage(timeDelta, false);
 
-        /* battery has been disconnected - can take a while for filter cap to disharge so we use a threshold of VBATT_PRESENT_THRESHOLD */
-        if (batteryState != BATTERY_NOT_PRESENT && vbat <= VBATT_PRESENT_THRESHOLD) {
+        /* battery has been disconnected - can take a while for filter cap to
+         * disharge so we use a threshold of VBATT_PRESENT_THRESHOLD */
+        if (batteryState != BATTERY_NOT_PRESENT &&
+            vbat <= VBATT_PRESENT_THRESHOLD) {
             batteryState = BATTERY_NOT_PRESENT;
             batteryCellCount = 0;
             batteryWarningVoltage = 0;
@@ -402,11 +447,19 @@ void batteryUpdate(timeUs_t timeDelta)
     }
 
     if (batteryState != BATTERY_NOT_PRESENT) {
-
-        if ((currentBatteryProfile->capacity.value > 0) && batteryFullWhenPluggedIn) {
-            uint32_t capacityDiffBetweenFullAndEmpty = currentBatteryProfile->capacity.value - currentBatteryProfile->capacity.critical;
-            int32_t drawn = (currentBatteryProfile->capacity.unit == BAT_CAPACITY_UNIT_MWH ? mWhDrawn : mAhDrawn);
-            batteryRemainingCapacity = (drawn > (int32_t)capacityDiffBetweenFullAndEmpty ? 0 : capacityDiffBetweenFullAndEmpty - drawn);
+        if ((currentBatteryProfile->capacity.value > 0) &&
+            batteryFullWhenPluggedIn) {
+            uint32_t capacityDiffBetweenFullAndEmpty =
+                currentBatteryProfile->capacity.value -
+                currentBatteryProfile->capacity.critical;
+            int32_t drawn =
+                (currentBatteryProfile->capacity.unit == BAT_CAPACITY_UNIT_MWH
+                     ? mWhDrawn
+                     : mAhDrawn);
+            batteryRemainingCapacity =
+                (drawn > (int32_t)capacityDiffBetweenFullAndEmpty
+                     ? 0
+                     : capacityDiffBetweenFullAndEmpty - drawn);
         }
 
         if (batteryUseCapacityThresholds) {
@@ -416,7 +469,8 @@ void batteryUpdate(timeUs_t timeDelta)
         }
 
         // handle beeper
-        if (ARMING_FLAG(ARMED) || !ARMING_FLAG(WAS_EVER_ARMED) || failsafeIsActive())
+        if (ARMING_FLAG(ARMED) || !ARMING_FLAG(WAS_EVER_ARMED) ||
+            failsafeIsActive())
             switch (batteryState) {
                 case BATTERY_WARNING:
                     beeper(BEEPER_BAT_LOW);
@@ -431,31 +485,25 @@ void batteryUpdate(timeUs_t timeDelta)
 }
 #endif
 
-batteryState_e getBatteryState(void)
-{
-    return batteryState;
-}
+batteryState_e getBatteryState(void) { return batteryState; }
 
-bool batteryWasFullWhenPluggedIn(void)
-{
-    return batteryFullWhenPluggedIn;
-}
+bool batteryWasFullWhenPluggedIn(void) { return batteryFullWhenPluggedIn; }
 
 bool batteryUsesCapacityThresholds(void)
 {
     return batteryUseCapacityThresholds;
 }
 
-bool isBatteryVoltageConfigured(void)
-{
-    return feature(FEATURE_VBAT);
-}
+bool isBatteryVoltageConfigured(void) { return feature(FEATURE_VBAT); }
 
 #ifdef USE_ADC
-uint16_t getVBatSample(void) {
+uint16_t getVBatSample(void)
+{
     // calculate battery voltage based on ADC reading
-    // result is Vbatt in 0.01V steps. 3.3V = ADC Vref, 0xFFF = 12bit adc, 1100 = 11:1 voltage divider (10k:1k)
-    return (uint64_t)adcGetChannel(ADC_BATTERY) * batteryMetersConfig()->voltage.scale * ADCVREF / (0xFFF * 1000);
+    // result is Vbatt in 0.01V steps. 3.3V = ADC Vref, 0xFFF = 12bit adc, 1100
+    // = 11:1 voltage divider (10k:1k)
+    return (uint64_t)adcGetChannel(ADC_BATTERY) *
+           batteryMetersConfig()->voltage.scale * ADCVREF / (0xFFF * 1000);
 }
 #endif
 
@@ -468,25 +516,17 @@ uint16_t getBatteryVoltage(void)
     return vbat;
 }
 
-uint16_t getBatteryRawVoltage(void)
-{
-    return vbat;
-}
+uint16_t getBatteryRawVoltage(void) { return vbat; }
 
-uint16_t getBatterySagCompensatedVoltage(void)
-{
-    return sagCompensatedVBat;
-}
+uint16_t getBatterySagCompensatedVoltage(void) { return sagCompensatedVBat; }
 
 float calculateThrottleCompensationFactor(void)
 {
-    return 1.0f + ((float)batteryFullVoltage / sagCompensatedVBat - 1.0f) * batteryMetersConfig()->throttle_compensation_weight;
+    return 1.0f + ((float)batteryFullVoltage / sagCompensatedVBat - 1.0f) *
+                      batteryMetersConfig()->throttle_compensation_weight;
 }
 
-uint8_t getBatteryCellCount(void)
-{
-    return batteryCellCount;
-}
+uint8_t getBatteryCellCount(void) { return batteryCellCount; }
 
 uint16_t getBatteryAverageCellVoltage(void)
 {
@@ -512,41 +552,30 @@ uint16_t getBatterySagCompensatedAverageCellVoltage(void)
     return 0;
 }
 
-uint32_t getBatteryRemainingCapacity(void)
-{
-    return batteryRemainingCapacity;
-}
+uint32_t getBatteryRemainingCapacity(void) { return batteryRemainingCapacity; }
 
 bool isAmperageConfigured(void)
 {
-    return feature(FEATURE_CURRENT_METER) && batteryMetersConfig()->current.type != CURRENT_SENSOR_NONE;
+    return feature(FEATURE_CURRENT_METER) &&
+           batteryMetersConfig()->current.type != CURRENT_SENSOR_NONE;
 }
 
-int16_t getAmperage(void)
-{
-    return amperage;
-}
+int16_t getAmperage(void) { return amperage; }
 
 int16_t getAmperageSample(void)
 {
-    int32_t microvolts = ((uint32_t)adcGetChannel(ADC_CURRENT) * ADCVREF * 100) / 0xFFF * 10 - (int32_t)batteryMetersConfig()->current.offset * 100;
-    return microvolts / batteryMetersConfig()->current.scale; // current in 0.01A steps
+    int32_t microvolts =
+        ((uint32_t)adcGetChannel(ADC_CURRENT) * ADCVREF * 100) / 0xFFF * 10 -
+        (int32_t)batteryMetersConfig()->current.offset * 100;
+    return microvolts /
+           batteryMetersConfig()->current.scale;  // current in 0.01A steps
 }
 
-int32_t getPower(void)
-{
-    return power;
-}
+int32_t getPower(void) { return power; }
 
-int32_t getMAhDrawn(void)
-{
-    return mAhDrawn;
-}
+int32_t getMAhDrawn(void) { return mAhDrawn; }
 
-int32_t getMWhDrawn(void)
-{
-    return mWhDrawn;
-}
+int32_t getMWhDrawn(void) { return mWhDrawn; }
 
 void currentMeterUpdate(timeUs_t timeDelta)
 {
@@ -554,40 +583,54 @@ void currentMeterUpdate(timeUs_t timeDelta)
     static int64_t mAhdrawnRaw = 0;
 
     switch (batteryMetersConfig()->current.type) {
-        case CURRENT_SENSOR_ADC:
-            {
-                amperage = pt1FilterApply4(&amperageFilterState, getAmperageSample(), AMPERAGE_LPF_FREQ, US2S(timeDelta));
-                break;
-            }
+        case CURRENT_SENSOR_ADC: {
+            amperage =
+                pt1FilterApply4(&amperageFilterState, getAmperageSample(),
+                                AMPERAGE_LPF_FREQ, US2S(timeDelta));
+            break;
+        }
         case CURRENT_SENSOR_VIRTUAL:
             amperage = batteryMetersConfig()->current.offset;
             if (ARMING_FLAG(ARMED)) {
-                navigationFSMStateFlags_t stateFlags = navGetCurrentStateFlags();
-                bool allNav = navConfig()->general.flags.nav_overrides_motor_stop == NOMS_ALL_NAV && posControl.navState != NAV_STATE_IDLE;
-                bool autoNav = navConfig()->general.flags.nav_overrides_motor_stop == NOMS_AUTO_ONLY && (stateFlags & (NAV_AUTO_RTH | NAV_AUTO_WP));
+                navigationFSMStateFlags_t stateFlags =
+                    navGetCurrentStateFlags();
+                bool allNav =
+                    navConfig()->general.flags.nav_overrides_motor_stop ==
+                        NOMS_ALL_NAV &&
+                    posControl.navState != NAV_STATE_IDLE;
+                bool autoNav =
+                    navConfig()->general.flags.nav_overrides_motor_stop ==
+                        NOMS_AUTO_ONLY &&
+                    (stateFlags & (NAV_AUTO_RTH | NAV_AUTO_WP));
                 int32_t throttleOffset;
 
-                if (allNav || autoNav) {    // account for motors running in Nav modes with throttle low + motor stop
+                if (allNav ||
+                    autoNav) {  // account for motors running in Nav modes with
+                                // throttle low + motor stop
                     throttleOffset = (int32_t)rcCommand[THROTTLE] - 1000;
                 } else {
-                    throttleOffset = (throttleStickIsLow() && ifMotorstopFeatureEnabled()) ? 0 : (int32_t)rcCommand[THROTTLE] - 1000;
+                    throttleOffset =
+                        (throttleStickIsLow() && ifMotorstopFeatureEnabled())
+                            ? 0
+                            : (int32_t)rcCommand[THROTTLE] - 1000;
                 }
-                int32_t throttleFactor = throttleOffset + (throttleOffset * throttleOffset / 50);
-                amperage += throttleFactor * batteryMetersConfig()->current.scale / 1000;
+                int32_t throttleFactor =
+                    throttleOffset + (throttleOffset * throttleOffset / 50);
+                amperage += throttleFactor *
+                            batteryMetersConfig()->current.scale / 1000;
             }
             break;
 #if defined(USE_ESC_SENSOR)
-        case CURRENT_SENSOR_ESC:
-            {
-                escSensorData_t * escSensor = escSensorGetData();
-                if (escSensor && escSensor->dataAge <= ESC_DATA_MAX_AGE) {
-                    amperage = pt1FilterApply4(&amperageFilterState, escSensor->current, AMPERAGE_LPF_FREQ, US2S(timeDelta));
-                }
-                else {
-                    amperage = 0;
-                }
+        case CURRENT_SENSOR_ESC: {
+            escSensorData_t *escSensor = escSensorGetData();
+            if (escSensor && escSensor->dataAge <= ESC_DATA_MAX_AGE) {
+                amperage =
+                    pt1FilterApply4(&amperageFilterState, escSensor->current,
+                                    AMPERAGE_LPF_FREQ, US2S(timeDelta));
+            } else {
+                amperage = 0;
             }
-            break;
+        } break;
 #endif
 
 #if defined(USE_FAKE_BATT_SENSOR)
@@ -604,8 +647,9 @@ void currentMeterUpdate(timeUs_t timeDelta)
     // Clamp amperage to positive values
     amperage = MAX(0, amperage);
 
-    // Work around int64 math compiler bug, don't change it unless the bug has been fixed !
-    // should be: mAhdrawnRaw += (int64_t)amperage * timeDelta / 1000;
+    // Work around int64 math compiler bug, don't change it unless the bug has
+    // been fixed ! should be: mAhdrawnRaw += (int64_t)amperage * timeDelta /
+    // 1000;
     mAhdrawnRaw += (int64_t)((int32_t)amperage * timeDelta) / 1000;
 
     mAhDrawn = mAhdrawnRaw / (3600 * 100);
@@ -614,12 +658,17 @@ void currentMeterUpdate(timeUs_t timeDelta)
 void powerMeterUpdate(timeUs_t timeDelta)
 {
     static int64_t mWhDrawnRaw = 0;
-    power = (int32_t)amperage * vbat / 100; // power unit is cW (0.01W resolution)
-    int32_t heatLossesCompensatedPower_mW = (int32_t)amperage * vbat / 10 + sq((int64_t)amperage) * powerSupplyImpedance / 10000;
+    power =
+        (int32_t)amperage * vbat / 100;  // power unit is cW (0.01W resolution)
+    int32_t heatLossesCompensatedPower_mW =
+        (int32_t)amperage * vbat / 10 +
+        sq((int64_t)amperage) * powerSupplyImpedance / 10000;
 
-    // Work around int64 math compiler bug, don't change it unless the bug has been fixed !
-    // should be: mWhDrawnRaw += (int64_t)heatLossesCompensatedPower_mW * timeDelta / 10000;
-    mWhDrawnRaw += (int64_t)((int64_t)heatLossesCompensatedPower_mW * timeDelta) / 10000;
+    // Work around int64 math compiler bug, don't change it unless the bug has
+    // been fixed ! should be: mWhDrawnRaw +=
+    // (int64_t)heatLossesCompensatedPower_mW * timeDelta / 10000;
+    mWhDrawnRaw +=
+        (int64_t)((int64_t)heatLossesCompensatedPower_mW * timeDelta) / 10000;
 
     mWhDrawn = mWhDrawnRaw / (3600 * 100);
 }
@@ -629,7 +678,8 @@ void powerMeterUpdate(timeUs_t timeDelta)
 // batteryWarningVoltage is in cV (0.01V)
 int32_t heatLossesCompensatedPower(int32_t power)
 {
-    return power + sq(power * 100 / batteryWarningVoltage) * powerSupplyImpedance / 100000;
+    return power + sq(power * 100 / batteryWarningVoltage) *
+                       powerSupplyImpedance / 100000;
 }
 
 void sagCompensatedVBatUpdate(timeUs_t currentTime, timeUs_t timeDelta)
@@ -642,13 +692,13 @@ void sagCompensatedVBatUpdate(timeUs_t currentTime, timeUs_t timeDelta)
     static pt1Filter_t sagCompVBatFilterState;
     static batteryState_e last_battery_state = BATTERY_NOT_PRESENT;
 
-    if ((batteryState != BATTERY_NOT_PRESENT) && (last_battery_state == BATTERY_NOT_PRESENT)) {
+    if ((batteryState != BATTERY_NOT_PRESENT) &&
+        (last_battery_state == BATTERY_NOT_PRESENT)) {
         pt1FilterReset(&sagCompVBatFilterState, vbat);
         pt1FilterReset(&impedanceFilterState, 0);
     }
 
     if (batteryState == BATTERY_NOT_PRESENT) {
-
         recordTimestamp = 0;
         impedanceSampleCount = 0;
         powerSupplyImpedance = 0;
@@ -656,7 +706,6 @@ void sagCompensatedVBatUpdate(timeUs_t currentTime, timeUs_t timeDelta)
         sagCompensatedVBat = vbat;
 
     } else {
-
         if (cmpTimeUs(currentTime, recordTimestamp) > MS2US(500))
             recordTimestamp = 0;
 
@@ -664,31 +713,46 @@ void sagCompensatedVBatUpdate(timeUs_t currentTime, timeUs_t timeDelta)
             amperageRecord = amperage;
             vbatRecord = vbat;
             recordTimestamp = currentTime;
-        } else if ((amperage - amperageRecord >= 200) && ((int16_t)vbatRecord - vbat >= 4)) {
-
-            uint16_t impedanceSample = (int32_t)(vbatRecord - vbat) * 1000 / (amperage - amperageRecord);
+        } else if ((amperage - amperageRecord >= 200) &&
+                   ((int16_t)vbatRecord - vbat >= 4)) {
+            uint16_t impedanceSample = (int32_t)(vbatRecord - vbat) * 1000 /
+                                       (amperage - amperageRecord);
 
             if (impedanceSampleCount <= IMPEDANCE_STABLE_SAMPLE_COUNT_THRESH) {
                 impedanceSampleCount += 1;
             }
 
             if (impedanceFilterState.state) {
-                pt1FilterSetTimeConstant(&impedanceFilterState, impedanceSampleCount > IMPEDANCE_STABLE_SAMPLE_COUNT_THRESH ? 1.2 : 0.5);
-                pt1FilterApply3(&impedanceFilterState, impedanceSample, US2S(timeDelta));
+                pt1FilterSetTimeConstant(
+                    &impedanceFilterState,
+                    impedanceSampleCount > IMPEDANCE_STABLE_SAMPLE_COUNT_THRESH
+                        ? 1.2
+                        : 0.5);
+                pt1FilterApply3(&impedanceFilterState, impedanceSample,
+                                US2S(timeDelta));
             } else {
                 pt1FilterReset(&impedanceFilterState, impedanceSample);
             }
 
             if (impedanceSampleCount > IMPEDANCE_STABLE_SAMPLE_COUNT_THRESH) {
-                powerSupplyImpedance = lrintf(pt1FilterGetLastOutput(&impedanceFilterState));
+                powerSupplyImpedance =
+                    lrintf(pt1FilterGetLastOutput(&impedanceFilterState));
                 powerSupplyImpedanceIsValid = true;
             }
-
         }
 
-        uint16_t sagCompensatedVBatSample = MIN(batteryFullVoltage, vbat + (int32_t)powerSupplyImpedance * amperage / 1000);
-        pt1FilterSetTimeConstant(&sagCompVBatFilterState, sagCompensatedVBatSample < pt1FilterGetLastOutput(&sagCompVBatFilterState) ? 40 : 500);
-        sagCompensatedVBat = lrintf(pt1FilterApply3(&sagCompVBatFilterState, sagCompensatedVBatSample, US2S(timeDelta)));
+        uint16_t sagCompensatedVBatSample =
+            MIN(batteryFullVoltage,
+                vbat + (int32_t)powerSupplyImpedance * amperage / 1000);
+        pt1FilterSetTimeConstant(
+            &sagCompVBatFilterState,
+            sagCompensatedVBatSample <
+                    pt1FilterGetLastOutput(&sagCompVBatFilterState)
+                ? 40
+                : 500);
+        sagCompensatedVBat =
+            lrintf(pt1FilterApply3(&sagCompVBatFilterState,
+                                   sagCompensatedVBatSample, US2S(timeDelta)));
     }
 
     DEBUG_SET(DEBUG_SAG_COMP_VOLTAGE, 0, powerSupplyImpedance);
@@ -699,34 +763,37 @@ void sagCompensatedVBatUpdate(timeUs_t currentTime, timeUs_t timeDelta)
 
 uint8_t calculateBatteryPercentage(void)
 {
-    if (batteryState == BATTERY_NOT_PRESENT)
-        return 0;
+    if (batteryState == BATTERY_NOT_PRESENT) return 0;
 
-    if (batteryFullWhenPluggedIn && isAmperageConfigured() && (currentBatteryProfile->capacity.value > 0) && (currentBatteryProfile->capacity.critical > 0)) {
-        uint32_t capacityDiffBetweenFullAndEmpty = currentBatteryProfile->capacity.value - currentBatteryProfile->capacity.critical;
-        return constrain(batteryRemainingCapacity * 100 / capacityDiffBetweenFullAndEmpty, 0, 100);
+    if (batteryFullWhenPluggedIn && isAmperageConfigured() &&
+        (currentBatteryProfile->capacity.value > 0) &&
+        (currentBatteryProfile->capacity.critical > 0)) {
+        uint32_t capacityDiffBetweenFullAndEmpty =
+            currentBatteryProfile->capacity.value -
+            currentBatteryProfile->capacity.critical;
+        return constrain(
+            batteryRemainingCapacity * 100 / capacityDiffBetweenFullAndEmpty, 0,
+            100);
     } else
-        return constrain((getBatteryVoltage() - batteryCriticalVoltage) * 100L / (batteryFullVoltage - batteryCriticalVoltage), 0, 100);
+        return constrain((getBatteryVoltage() - batteryCriticalVoltage) * 100L /
+                             (batteryFullVoltage - batteryCriticalVoltage),
+                         0, 100);
 }
 
-void batteryDisableProfileAutoswitch(void) {
-    profileAutoswitchDisable = true;
-}
+void batteryDisableProfileAutoswitch(void) { profileAutoswitchDisable = true; }
 
-bool isPowerSupplyImpedanceValid(void) {
-    return powerSupplyImpedanceIsValid;
-}
+bool isPowerSupplyImpedanceValid(void) { return powerSupplyImpedanceIsValid; }
 
-uint16_t getPowerSupplyImpedance(void) {
-    return powerSupplyImpedance;
-}
+uint16_t getPowerSupplyImpedance(void) { return powerSupplyImpedance; }
 
 // returns cW (0.01W)
-int32_t calculateAveragePower(void) {
+int32_t calculateAveragePower(void)
+{
     return (int64_t)mWhDrawn * 360 / getFlightTime();
 }
 
 // returns mWh / meter
-int32_t calculateAverageEfficiency(void) {
+int32_t calculateAverageEfficiency(void)
+{
     return getFlyingEnergy() * 100 / getTotalTravelDistance();
 }

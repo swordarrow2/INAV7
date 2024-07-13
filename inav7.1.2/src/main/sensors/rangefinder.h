@@ -21,16 +21,18 @@
 #include "config/parameter_group.h"
 #include "drivers/rangefinder/rangefinder.h"
 
-typedef enum {
-    RANGEFINDER_NONE        = 0,
-    RANGEFINDER_SRF10       = 1,
-    RANGEFINDER_VL53L0X     = 2,
-    RANGEFINDER_MSP         = 3,
-    RANGEFINDER_BENEWAKE    = 4,
-    RANGEFINDER_VL53L1X     = 5,
-    RANGEFINDER_US42        = 6,
+typedef enum
+{
+    RANGEFINDER_NONE = 0,
+    RANGEFINDER_SRF10 = 1,
+    RANGEFINDER_VL53L0X = 2,
+    RANGEFINDER_MSP = 3,
+    RANGEFINDER_BENEWAKE = 4,
+    RANGEFINDER_VL53L1X = 5,
+    RANGEFINDER_US42 = 6,
     RANGEFINDER_TOF10102I2C = 7,
-    RANGEFINDER_FAKE        = 8,
+    RANGEFINDER_FAKE = 8,
+    RANGEFINDER_MINI4 = 9
 } rangefinderType_e;
 
 typedef struct rangefinderConfig_s {

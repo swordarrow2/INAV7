@@ -12,12 +12,21 @@
         "navigation.h": "c",
         "rc_modes.h": "c",
         "sbus_channels.h": "c",
-        "fc_init.h": "c"
+        "fc_init.h": "c",
+        "utils.h": "c",
+        "rangefinder.h": "c",
+        "build_config.h": "c",
+        "rangefinder_virtual.h": "c"
     },
+    
     "editor.tabSize": 4,
     "editor.insertSpaces": true,
     "editor.detectIndentation": false,
     "editor.expandTabs": true,
-    "C_Cpp.clang_format_fallbackStyle": "{ BasedOnStyle: Google, IndentWidth: 4,  BreakBeforeBraces: Mozilla }"
+    "C_Cpp.clang_format_fallbackStyle": "Visual Studio",
+    "editor.wordWrap": "wordWrapColumn",
+    "editor.wordWrapColumn": 512,
+    "diffEditor.wordWrap": "inherit",
+    "C_Cpp.vcFormat.indent.preserveComments": true
 
 }

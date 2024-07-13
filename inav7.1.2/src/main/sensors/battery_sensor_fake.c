@@ -22,9 +22,9 @@
  * along with this program. If not, see http://www.gnu.org/licenses/.
  */
 
-
 #include <stdbool.h>
 #include <stdint.h>
+
 #include "platform.h"
 
 #if defined(USE_FAKE_BATT_SENSOR)
@@ -35,24 +35,12 @@
 static uint16_t fakeVbat;
 static uint16_t fakeAmerperage;
 
-void fakeBattSensorSetVbat(uint16_t vbat)
-{
-    fakeVbat = vbat;
-}
+void fakeBattSensorSetVbat(uint16_t vbat) { fakeVbat = vbat; }
 
-void fakeBattSensorSetAmperage(uint16_t amperage)
-{
-    fakeAmerperage = amperage;
-}
+void fakeBattSensorSetAmperage(uint16_t amperage) { fakeAmerperage = amperage; }
 
-uint16_t fakeBattSensorGetVBat(void)
-{
-    return fakeVbat;
-}
+uint16_t fakeBattSensorGetVBat(void) { return fakeVbat; }
 
-uint16_t fakeBattSensorGetAmerperage(void)
-{
-    return fakeAmerperage;
-}
+uint16_t fakeBattSensorGetAmerperage(void) { return fakeAmerperage; }
 
 #endif
