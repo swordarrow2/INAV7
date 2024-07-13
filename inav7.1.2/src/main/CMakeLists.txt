@@ -482,6 +482,7 @@ main_sources(COMMON_SRC
     io/rangefinder.h
     io/rangefinder_msp.c
     io/rangefinder_benewake.c
+    io/rangefinder_mini4.c
     io/rangefinder_fake.c
     io/opflow.h
     io/opflow_cxof.c
