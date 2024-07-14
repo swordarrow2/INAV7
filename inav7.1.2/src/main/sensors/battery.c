@@ -51,6 +51,10 @@
 #include "sensors/battery_sensor_fake.h"
 #endif
 
+#if defined(USE_BAT_GAUGE_BQ4050)
+#include "drivers/battery/battery_gauge_bq4050.h"
+#endif
+
 #define ADCVREF 3300  // in mV (3300 = 3.3V)
 
 #define VBATT_CELL_FULL_MAX_DIFF \
@@ -309,6 +313,12 @@ static void updateBatteryVoltage(timeUs_t timeDelta, bool justConnected)
                 vbat = 0;
             }
         } break;
+#endif
+
+#if defined(USE_BAT_GAUGE_BQ4050)
+        case VOLTAGE_SENSOR_BQ4050:
+        vbat=bq4050Read();
+        break;
 #endif
 
 #if defined(USE_FAKE_BATT_SENSOR)
@@ -604,8 +614,7 @@ void currentMeterUpdate(timeUs_t timeDelta)
                     (stateFlags & (NAV_AUTO_RTH | NAV_AUTO_WP));
                 int32_t throttleOffset;
 
-                if (allNav ||
-                    autoNav) {  // account for motors running in Nav modes with
+                if (allNav ||  autoNav) {  // account for motors running in Nav modes with
                                 // throttle low + motor stop
                     throttleOffset = (int32_t)rcCommand[THROTTLE] - 1000;
                 } else {
