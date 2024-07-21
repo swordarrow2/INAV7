@@ -31,6 +31,7 @@ typedef enum {
     CURRENT_SENSOR_VIRTUAL,
     CURRENT_SENSOR_FAKE,
     CURRENT_SENSOR_ESC,
+    CURRENT_SENSOR_BQ4050,
     CURRENT_SENSOR_MAX = CURRENT_SENSOR_FAKE
 } currentSensor_e;
 
@@ -38,7 +39,10 @@ typedef enum {
     VOLTAGE_SENSOR_NONE = 0,
     VOLTAGE_SENSOR_ADC,
     VOLTAGE_SENSOR_ESC,
-    VOLTAGE_SENSOR_FAKE
+    VOLTAGE_SENSOR_FAKE,
+#if defined(USE_BAT_GAUGE_BQ4050)
+    VOLTAGE_SENSOR_BQ4050
+#endif
 } voltageSensor_e;
 
 typedef enum {

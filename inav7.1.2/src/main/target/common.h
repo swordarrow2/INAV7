@@ -57,6 +57,8 @@
 #define USE_TELEMETRY
 #define USE_TELEMETRY_LTM
 
+#define USE_BAT_GAUGE_BQ4050
+
 // This is the shortest period in microseconds that the scheduler will allow
 #define SCHEDULER_DELAY_LIMIT           10
 

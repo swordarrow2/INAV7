@@ -98,6 +98,10 @@ main_sources(COMMON_SRC
     drivers/adc.c
     drivers/adc.h
 
+    drivers/battery/battery_gauge.h
+    drivers/battery/battery_gauge_bq4050.h
+    drivers/battery/battery_gauge_bq4050.c
+
     drivers/barometer/barometer.h
     drivers/barometer/barometer_bmp085.c
     drivers/barometer/barometer_bmp085.h

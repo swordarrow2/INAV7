@@ -35,10 +35,10 @@ tables:
   - name: failsafe_procedure
     values: ["LAND", "DROP", "RTH", "NONE"]
   - name: current_sensor
-    values: ["NONE", "ADC", "VIRTUAL", "FAKE", "ESC"]
+    values: ["NONE", "ADC", "VIRTUAL", "FAKE", "ESC", "BQ4050"]
     enum: currentSensor_e
   - name: voltage_sensor
-    values: ["NONE", "ADC", "ESC", "FAKE"]
+    values: ["NONE", "ADC", "ESC", "FAKE", "BQ4050"]
     enum: voltageSensor_e
   - name: imu_inertia_comp_method
     values: ["VELNED", "TURNRATE","ADAPTIVE"]
