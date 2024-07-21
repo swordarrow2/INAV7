@@ -58,6 +58,10 @@
 #define I2C1_SDA                        PB7        // SDA
 #define DEFAULT_I2C_BUS                 BUS_I2C1
 
+// *************** DashBoard **************************
+#define USE_DASHBOARD
+#define USE_OLED_UG2864
+
 // *************** Baro **************************
 #define USE_BARO
 #define BARO_I2C_BUS                    DEFAULT_I2C_BUS
